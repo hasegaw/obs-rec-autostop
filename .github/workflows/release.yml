@@ -1,0 +1,91 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26.x'
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+
+  release:
+    name: Build and publish
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: Build macOS and Windows archives
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: go run ./cmd/build-release "$RELEASE_TAG"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease=false
+          if [[ "${RELEASE_TAG%%+*}" == *-* ]]; then
+            prerelease=true
+          fi
+
+          # A failed upload can be retried against its existing draft.
+          # Published assets remain unchanged, including immutable releases.
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then
+            if [[ "$draft" != "true" ]]; then
+              echo '::error::This release is already published. Use a new version tag to publish new binaries.'
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG" --generate-notes --prerelease="$prerelease"
+          fi
+
+          directory="dist/$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" --clobber \
+            "$directory/obs-rec-autostop_${RELEASE_TAG}_macos_arm64.tar.gz" \
+            "$directory/obs-rec-autostop_${RELEASE_TAG}_macos_amd64.tar.gz" \
+            "$directory/obs-rec-autostop_${RELEASE_TAG}_windows_amd64.zip" \
+            "$directory/obs-rec-autostop_${RELEASE_TAG}_windows_arm64.zip" \
+            "$directory/checksums.txt"
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$prerelease"

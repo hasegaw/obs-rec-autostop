@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+
+/obs-rec-autostop
+/obs-rec-autostop.exe
+/obs_rec_autostop
+/obs_rec_autostop.exe
+/bin/
+/dist/
